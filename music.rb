@@ -1,6 +1,6 @@
 require 'dl'
 require 'dl/import'
-
+require 'midilib'
 #Interface to the magic C-based land of music playing
 class LiveMIDI
   ON = 0x90
@@ -283,4 +283,21 @@ def marytap
   t.run
 end
 
-marytap
+
+#class for storing music I write lol
+class FileMIDI
+  attr_reader :interval
+  
+  def initialize(bpm) 
+    @bpm = bpm
+    @interval = 60.0/bpm
+    @base = Time.now.to_f
+    @seq = MIDI::Sequence.new
+    header_track = MIDI::Track.new(@seq)
+    @seq.tracks << header_track
+    header_track.events << MIDI::Tempo.new(MIDI::Tempo.bpm_to_mpq(@bpm))
+    @tracks = []
+    @end = []
+  end
+
+end
