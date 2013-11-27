@@ -237,7 +237,7 @@ class SongPlayer
   def play(time)
     if @boo
       @boo = false
-      sleep(10)
+      #sleep(10)
     end
     note, duration = @pattern[@count]
     @count += 1
@@ -288,6 +288,7 @@ end
 class FileMIDI
   attr_reader :interval
   
+  #sequences have tracks, tracks have events, events are note on/off etc.
   def initialize(bpm) 
     @bpm = bpm
     @interval = 60.0/bpm
@@ -297,7 +298,156 @@ class FileMIDI
     @seq.tracks << header_track
     header_track.events << MIDI::Tempo.new(MIDI::Tempo.bpm_to_mpq(@bpm))
     @tracks = []
-    @end = []
+    @last = []
+  end
+  
+  #Get a track for channel (each channel is an instrument)
+  def new_track(channel)
+    track = MIDI::Track.new(@seq)
+    @tracks[channel] = track
+    @seq.tracks << track
+    return track
+  end
+  
+  #Redefine channel as the instrument at preset
+  def program_change(channel, preset)
+    track = new_track(channel)
+    track.events << MIDI::ProgramChange.new(0, preset, 0)
+  end
+  
+  #Get the track of channel
+  def channel_track(channel)
+    @tracks[channel] || new_track(channel)
+  end
+  
+  #Play note on channel for duration with velocity at time
+  def play(channel, note, duration=1, velocity=100, time=nil) 
+    time ||= Time.now.to_f
+    on_delta = time - (@last[channel] || time)
+    off_delta = duration * @interval
+    @last[channel] = time
+    track = channel_track(channel)
+    track.events << MIDI::NoteOnEvent.new(0, note, velocity, seconds_to_delta(on_delta))
+    track.events << MIDI::NoteOffEvent.new(0, note, velocity, seconds_to_delta(off_delta))
   end
 
+  #magic MIDI conversion nonsense
+  def seconds_to_delta(secs) 
+    bps = 60.0 / @bpm
+    beats = secs / bps
+    return @seq.length_to_delta(beats)
+  end
+
+  #write to file
+  def save(output_filename)
+    File.open(output_filename, 'wb') do |file|
+      @seq.write(file)
+    end
+  end
+end
+
+def marysave
+  bpm = 120
+  midi = FileMIDI.new(bpm)
+  SongPlayer.new(midi, bpm, "4202 444= 222= 477=")
+  sleep(10)
+  midi.save("mary.mid")
+end 
+
+
+#Class for live-coding music
+class Player
+  attr_reader :tick
+  
+  def initialize
+    bpm(120)
+    reset
+  end
+
+  #callbacks are bangs that play music, closebacks turn it off/on
+  def reset
+    @callbacks = []
+    @closebacks = []
+  end
+  
+  def bpm(beats_per_minute = nil) 
+    unless beats_per_minute.nil?
+      @bpm = beats_per_minute
+      @tick = 60.0/@bpm
+    end
+    return @bpm
+  end
+
+  def bang(callback1 = nil, &callback2)
+    @callbacks.push(callback1) if callback1
+    @callbacks.push(callback2) if callback2
+  end
+
+  def close(closeback1 = nil, &closeback2) 
+    @closebacks.push(closeback1) if closeback1
+    @closebacks.push(closeback2) if closeback2
+  end
+  
+  #Run all the callbacks (definition of bang).
+  def on_bang(b)
+    @callbacks.each {|callback| callback.call(b)}
+  end
+ 
+  #Run all the closebacks(Definition of close)
+  def on_close
+    @closebacks.each {|closeback| closeback.call}
+  end
+end
+
+#Given a file, check the file for changes and play the new music written to file live
+class Monitor
+  def initialize(filename)
+    raise "File does not exist" if ! File.exists?(filename)
+    raise "Can't read file" if ! File.readable?(filename)
+    #Check file for updates twice every second
+    @timer = Timer.get(0.5)
+    @filename = filename
+    @bangs = 0
+    @players = [Player.new()]
+    load
+  end
+  #read in music, prepare to drop
+  def load()
+    code = File.open(@filename) {|file| file.read}
+    dup = @players.last.dup
+    begin
+      dup.reset
+      dup.instance_eval(code)
+      @players.push(dup)
+    rescue
+      puts "LOAD ERROR #{$!}"
+    end
+    @load_time = Time.now.to_i
+  end
+
+  #Find out if the file has been modified
+  def modified?
+    return File.mtime(@filename).to_i > @load_time
+  end
+
+  #Play the music, now is when it starts
+  def run(now=nil)
+    now ||= Time.now.to_f
+    load() if modified?
+    begin
+      @players.last.on_bang(@bangs)
+    rescue
+      puts "RUN ERROR: #{$!}"
+      @players.pop
+      retry unless @players.empty?
+    end
+    @bangs += 1
+    @timer.at(now + @players.last.tick) {|time| run(time)}
+  end
+  
+  #Don't let it stop
+  def run_forever
+    run
+    sleep(10) while true
+  end
 end
