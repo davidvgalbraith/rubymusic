@@ -161,12 +161,35 @@ end
 
 class LiveMIDI
   attr_reader :interval
+  attr_accessor :bpm
+  @@singleton = nil
+  def self.use(bpm=120)
+    return @@singleton = self.new(bpm) if @@singleton.nil?
+    @@singleton.bpm = bpm
+    @@singleton.reset
+    return @@singleton
+  end
   #Add in a timer for to control note duration
+  #and a channel manager to make instrument switches easier
   def initialize(bpm = 120)
+    self.bpm = bpm
     @interval = 60.0/bpm
     @timer = Timer.get(@interval/10)
+    @channel_manager = ChannelManager.new(16)
     open
   end
+
+  
+  def instrument(preset, channel = nil)
+    channel = @channel_manager.allocate(channel)
+    program_change(channel, preset)
+    return Instrument.new(self, channel)
+  end
+
+  def reset
+    @channel_manager.reset
+  end
+
   #put the note on now, take it off after duration
   def play(channel, note, duration, velocity = 100, time = nil)
     on_time = time || Time.now.to_f
@@ -450,4 +473,58 @@ class Monitor
     run
     sleep(10) while true
   end
+end
+
+#Increase readability of live coding
+class Instrument
+  def initialize(midi, channel)
+    @midi = midi
+    @channel = channel
+  end
+
+  def play(*args)
+    @midi.play(@channel, *args)
+  end
+  
+  #makes a pattern and returns a proc that plays the pattern
+  #to be fed directly to bang
+  def pattern(base, string)
+    pattern = Pattern.new(base, string)
+    interval = @midi.interval
+    return proc do |b|
+      note, duration = pattern[b]
+      length = interval * duration - (interval * 0.10)
+      play(note, length) if note
+    end
+  end
+end
+
+#Smoother interface for switching instruments
+
+class ChannelManager
+  def initialize(total)
+    @total = total
+    reset
+  end
+  
+  def reset
+    #available channels
+    @channels = (0...@total).to_a
+  end
+
+  #indicate the newly occupied status of channel
+  def allocate(channel=nil)
+    raise "No channels left to allocate" if @channels.empty?
+    return @channels.shift if channel.nil?
+    raise "Channel unavailable" unless @channels.include?(channel)
+    @channels.delete(channel)
+    return channel
+  end
+  
+  #free channel for some future allocation
+  def release(channel)
+    @channels.push(channel)
+    @channels.sort!
+  end
+
 end
